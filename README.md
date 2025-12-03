@@ -1,5 +1,4 @@
 # GestureScape - 交互式3D粒子艺术体验
-摸鱼用gemini搓的赛博千里江山图和赛博昙花
 
 GestureScape（中文名：瞬境）是一个将古典山水美学与现代交互技术融合的创意项目。通过Three.js构建的实时3D粒子系统，结合摄像头手势识别技术，让用户能够用手势控制动态粒子艺术。
 
@@ -25,6 +24,7 @@ GestureScape（中文名：瞬境）是一个将古典山水美学与现代交�
 - **在线演示**：https://laddzhao.github.io/GestureScape/
 - **GitHub仓库**：https://github.com/laddzhao/GestureScape
 - **原始创意**：基于 [sihan9119](https://github.com/sihan9119) 的初始概念
+摸鱼用gemini搓的赛博千里江山图和赛博昙花
 
 ## 🙏 致谢
 特别感谢Three.js社区、MediaPipe团队以及所有开源贡献者，让创意与技术得以自由流动。
