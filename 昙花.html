@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Liquid Silk Flower - Super Bloom</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #020202; font-family: 'Segoe UI', sans-serif; }
+        canvas { display: block; }
+
+        /* UI 面板 */
+        #ui-layer {
+            position: absolute; top: 20px; left: 20px; pointer-events: none; z-index: 10;
+        }
+        .panel {
+            background: rgba(5, 5, 10, 0.75); backdrop-filter: blur(16px);
+            padding: 20px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #eee; width: 260px; pointer-events: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+        }
+        h1 {
+            margin: 0 0 15px 0; font-size: 16px; font-weight: 400; letter-spacing: 3px;
+            text-transform: uppercase; color: #fff; text-align: center;
+            border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;
+        }
+        .status-dot { width: 8px; height: 8px; background: #666; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-dot.active { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+        .status-text { font-size: 12px; color: #888; }
+        .control-group { margin-top: 15px; display: flex; flex-direction: column; gap: 8px; }
+        .color-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #aaa; }
+        input[type="color"] { -webkit-appearance: none; border: none; width: 24px; height: 24px; border-radius: 50%; cursor: pointer; background: none; padding: 0; }
+        input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+        input[type="color"]::-webkit-color-swatch { border: 1px solid #fff; border-radius: 50%; }
+        button { margin-top: 20px; width: 100%; padding: 8px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.2); color: #fff; border-radius: 4px; cursor: pointer; font-size: 12px; transition: 0.2s; }
+        button:hover { background: rgba(255, 255, 255, 0.15); }
+
+        /* 摄像头调试区域 */
+        #cam-container {
+            position: absolute; bottom: 20px; right: 20px;
+            width: 160px; height: 120px; z-index: 5;
+            border-radius: 8px; overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: #000;
+            transform: scaleX(-1);
+        }
+        #cam-video {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; opacity: 0.3;
+        }
+        #output-canvas {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 6;
+        }
+    </style>
+
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <!-- MediaPipe 依赖 -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="panel">
+            <h1>Liquid Silk</h1>
+            <div style="margin-bottom:10px; text-align:center;">
+                <div class="status-dot" id="status-dot"></div>
+                <span class="status-text" id="status-text">初始化系统...</span>
+            </div>
+            <div class="control-group">
+                <div class="color-row"><span>核心</span><input type="color" id="col-0" value="#ff0055"></div>
+                <div class="color-row"><span>内层</span><input type="color" id="col-1" value="#00ccff"></div>
+                <div class="color-row"><span>外层</span><input type="color" id="col-2" value="#3300ff"></div>
+                <div class="color-row"><span>泼溅</span><input type="color" id="col-3" value="#ffffff"></div>
+            </div>
+            <button id="fs-btn">全屏模式</button>
+        </div>
+    </div>
+
+    <div id="cam-container">
+        <video id="cam-video" playsinline muted autoplay></video>
+        <canvas id="output-canvas"></canvas>
+    </div>
+
+    <script>
+        // ================= 1. Three.js 场景 =================
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x020205, 0.02);
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 0, 12);
+        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.body.appendChild(renderer.domElement);
+
+        // ================= 2. 粒子系统 =================
+        const particlesCount = 80000;
+        const geometry = new THREE.BufferGeometry();
+        const positions = [], randoms = [], layerIndices = [], sizes = [], edgeFactors = [];
+        const layers = [
+            { id: 0, r: 1.5, petals: 0, type: 'core', ratio: 0.1 },
+            { id: 1, r: 3.5, petals: 3, type: 'normal', ratio: 0.25 },
+            { id: 2, r: 6.0, petals: 5, type: 'normal', ratio: 0.35 },
+            { id: 3, r: 9.0, petals: 0, type: 'scatter', ratio: 0.3 }
+        ];
+
+        layers.forEach(layer => {
+            const count = Math.floor(particlesCount * layer.ratio);
+            for (let i = 0; i < count; i++) {
+                let theta = Math.random() * Math.PI * 2;
+                let phi = (Math.random() - 0.5) * Math.PI;
+                let x, y, z;
+                let isEdge = false;
+
+                if (layer.type === 'normal') {
+                    let shape = Math.sin(theta * layer.petals) * 0.5 + Math.sin(theta * layer.petals * 2.3 + 1.0) * 0.3;
+                    shape = Math.pow(Math.abs(shape), 0.6);
+                    let maxR = layer.r * (0.6 + 0.6 * shape) + (Math.random() - 0.5) * 0.5;
+                    let r = maxR * Math.sqrt(Math.random());
+                    if (r > maxR * 0.97) isEdge = true;
+                    x = r * Math.cos(theta); y = r * Math.sin(theta);
+                    z = (r * r) * 0.08 * (Math.cos(theta * layer.petals) * 0.5) + (Math.random() - 0.5) * 0.5;
+                } else if (layer.type === 'core') {
+                    let r = layer.r * Math.random();
+                    x = r * Math.cos(theta) * Math.cos(phi); y = r * Math.sin(theta) * Math.cos(phi); z = r * Math.sin(phi);
+                } else {
+                    let r = layer.r * (0.5 + Math.random());
+                    x = r * Math.cos(theta); y = r * Math.sin(theta); z = (Math.random() - 0.5) * 4.0;
+                }
+                positions.push(x, y, z);
+                randoms.push(Math.random(), Math.random(), Math.random());
+                layerIndices.push(layer.id);
+                edgeFactors.push(isEdge ? 1.0 : 0.0);
+                if (isEdge) sizes.push(0.5);
+                else if (layer.type === 'scatter') sizes.push(Math.random() * 0.8);
+                else sizes.push(Math.random() * 1.0 + 0.5);
+            }
+        });
+
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('aRandom', new THREE.Float32BufferAttribute(randoms, 3));
+        geometry.setAttribute('aLayer', new THREE.Float32BufferAttribute(layerIndices, 1));
+        geometry.setAttribute('aSize', new THREE.Float32BufferAttribute(sizes, 1));
+        geometry.setAttribute('aEdge', new THREE.Float32BufferAttribute(edgeFactors, 1));
+
+        // ================= 3. Shader (已修改扩散逻辑) =================
+        const vertexShader = `
+            uniform float uTime;
+            uniform float uScale;
+            attribute vec3 aRandom;
+            attribute float aLayer;
+            attribute float aSize;
+            attribute float aEdge;
+            varying float vLayer;
+            varying float vEdge;
+
+            // Simplex Noise (保持不变)
+            vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+            vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+            float snoise(vec3 v) {
+                const vec2  C = vec2(1.0/6.0, 1.0/3.0); const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+                vec3 i  = floor(v + dot(v, C.yyy) ); vec3 x0 = v - i + dot(i, C.xxx) ;
+                vec3 g = step(x0.yzx, x0.xyz); vec3 l = 1.0 - g;
+                vec3 i1 = min( g.xyz, l.zxy ); vec3 i2 = max( g.xyz, l.zxy );
+                vec3 x1 = x0 - i1 + C.xxx; vec3 x2 = x0 - i2 + C.yyy; vec3 x3 = x0 - D.yyy;
+                i = mod289(i);
+                vec4 p = permute( permute( permute( i.z + vec4(0.0, i1.z, i2.z, 1.0 )) + i.y + vec4(0.0, i1.y, i2.y, 1.0 )) + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+                float n_ = 0.142857142857; vec3  ns = n_ * D.wyz - D.xzx;
+                vec4 j = p - 49.0 * floor(p * ns.z * ns.z); vec4 x_ = floor(j * ns.z);
+                vec4 y_ = floor(j - 7.0 * x_ ); vec4 x = x_ *ns.x + ns.yyyy; vec4 y = y_ *ns.x + ns.yyyy;
+                vec4 h = 1.0 - abs(x) - abs(y); vec4 b0 = vec4( x.xy, y.xy ); vec4 b1 = vec4( x.zw, y.zw );
+                vec4 s0 = floor(b0)*2.0 + 1.0; vec4 s1 = floor(b1)*2.0 + 1.0; vec4 sh = -step(h, vec4(0.0));
+                vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ; vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+                vec3 p0 = vec3(a0.xy,h.x); vec3 p1 = vec3(a0.zw,h.y); vec3 p2 = vec3(a1.xy,h.z); vec3 p3 = vec3(a1.zw,h.w);
+                vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+                p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+                vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+                m = m * m;
+                return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
+            }
+            vec3 curl(vec3 p) {
+                float eps = 0.1;
+                vec3 n = vec3(0.0);
+                n.x = snoise(vec3(p.x, p.y + eps, p.z)) - snoise(vec3(p.x, p.y - eps, p.z));
+                n.y = snoise(vec3(p.x, p.y, p.z + eps)) - snoise(vec3(p.x, p.y, p.z - eps));
+                n.z = snoise(vec3(p.x + eps, p.y, p.z)) - snoise(vec3(p.x - eps, p.y, p.z));
+                return n * 10.0;
+            }
+
+            void main() {
+                vLayer = aLayer; vEdge = aEdge;
+                vec3 pos = position;
+
+                // 基础自转
+                float dist = length(pos.xy);
+                float angle = uTime * 0.05 + dist * 0.05 * (1.0 - uScale);
+                float s = sin(angle); float c = cos(angle);
+                pos.xy = mat2(c, -s, s, c) * pos.xy;
+
+                // 噪波计算
+                vec3 noise = curl(pos * 0.2 + uTime * 0.1);
+
+                // --- 核心修改部分 ---
+                if (aLayer > 2.5) {
+                    // 泼溅层 (Splash)：像烟花一样剧烈发散
+                    // 增加了 noise 的系数 (2.5 -> 5.0)，让形态更混乱
+                    pos += noise * uScale * 5.0;
+                    // 增加了整体放大的倍率 (0.8 -> 2.2)，让它们飞得更远
+                    pos *= (1.0 + uScale * 2.2);
+                } else {
+                    // 花瓣层 (Petals)：丝绸质感，但也增加了发散度
+                    // 增加了 noise 扭曲 (0.3 -> 0.8)
+                    pos += noise * uScale * 0.8;
+                    // 增加了体积膨胀 (1.0 -> 1.5)
+                    pos *= (0.4 + uScale * 1.5);
+                }
+
+                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                gl_Position = projectionMatrix * mvPosition;
+
+                float pSize = aEdge > 0.5 ? 1.0 : (4.0 * aSize + uScale * 2.0);
+                gl_PointSize = pSize * (15.0 / -mvPosition.z);
+            }
+        `;
+
+        const fragmentShader = `
+            uniform vec3 uCol0; uniform vec3 uCol1; uniform vec3 uCol2; uniform vec3 uCol3;
+            varying float vLayer; varying float vEdge;
+            void main() {
+                vec2 uv = gl_PointCoord.xy - 0.5;
+                float d = length(uv);
+                if (d > 0.5) discard;
+                float alpha = 1.0 - smoothstep(0.3, 0.5, d);
+                vec3 baseColor = uCol0;
+                if (vLayer > 0.5 && vLayer < 1.5) baseColor = uCol1;
+                else if (vLayer > 1.5 && vLayer < 2.5) baseColor = uCol2;
+                else if (vLayer > 2.5) baseColor = uCol3;
+                vec3 gold = vec3(1.0, 0.9, 0.5) * 2.0;
+                vec3 finalColor = baseColor;
+                if (vEdge > 0.5) { finalColor = gold; alpha *= 1.5; }
+                else { alpha *= 0.6; }
+                if (vLayer > 2.5) finalColor *= 1.2;
+                gl_FragColor = vec4(finalColor, alpha);
+            }
+        `;
+
+        const uniforms = {
+            uTime: { value: 0 },
+            uScale: { value: 0.5 },
+            uCol0: { value: new THREE.Color('#ff0055') },
+            uCol1: { value: new THREE.Color('#00ccff') },
+            uCol2: { value: new THREE.Color('#3300ff') },
+            uCol3: { value: new THREE.Color('#ffffff') }
+        };
+
+        const material = new THREE.ShaderMaterial({
+            vertexShader, fragmentShader, uniforms,
+            transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+        });
+        scene.add(new THREE.Points(geometry, material));
+
+        // ================= 4. UI 绑定 =================
+        document.getElementById('col-0').addEventListener('input', (e) => uniforms.uCol0.value.set(e.target.value));
+        document.getElementById('col-1').addEventListener('input', (e) => uniforms.uCol1.value.set(e.target.value));
+        document.getElementById('col-2').addEventListener('input', (e) => uniforms.uCol2.value.set(e.target.value));
+        document.getElementById('col-3').addEventListener('input', (e) => uniforms.uCol3.value.set(e.target.value));
+        document.getElementById('fs-btn').addEventListener('click', () => {
+             if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+             else document.exitFullscreen();
+        });
+
+        // ================= 5. 渲染循环 =================
+        const clock = new THREE.Clock();
+        let targetScale = 0.5;
+        let currentScale = 0.5;
+        let isHandActive = false;
+        let handLostFrames = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const t = clock.getElapsedTime();
+
+            if (!isHandActive) {
+                handLostFrames++;
+                if (handLostFrames > 15) {
+                    targetScale = 0.4 + Math.sin(t * 0.8) * 0.3;
+                }
+            } else {
+                handLostFrames = 0;
+            }
+
+            // 平滑插值
+            currentScale += (targetScale - currentScale) * 0.08;
+
+            uniforms.uTime.value = t;
+            uniforms.uScale.value = currentScale;
+
+            scene.rotation.y = Math.sin(t * 0.1) * 0.15;
+            scene.rotation.z = t * 0.04;
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // ================= 6. MediaPipe 手势识别 =================
+        const videoElement = document.getElementById('cam-video');
+        const canvasElement = document.getElementById('output-canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+
+        function resizeCanvas() {
+            canvasElement.width = videoElement.videoWidth || 160;
+            canvasElement.height = videoElement.videoHeight || 120;
+        }
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                isHandActive = true;
+                statusDot.classList.add('active');
+                statusText.innerText = "手势已控制";
+
+                for (const landmarks of results.multiHandLandmarks) {
+                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
+                    drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 1});
+
+                    const wrist = landmarks[0];
+                    const middleTip = landmarks[12];
+                    const dx = wrist.x - middleTip.x;
+                    const dy = wrist.y - middleTip.y;
+                    const distance = Math.sqrt(dx*dx + dy*dy);
+
+                    let normalized = (distance - 0.25) / 0.45;
+                    targetScale = Math.max(0, Math.min(1.2, normalized));
+                }
+            } else {
+                isHandActive = false;
+                statusDot.classList.remove('active');
+                statusText.innerText = "请将手放入摄像头区域...";
+            }
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        hands.onResults(onResults);
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                if(canvasElement.width !== videoElement.videoWidth) resizeCanvas();
+                await hands.send({image: videoElement});
+            },
+            width: 320,
+            height: 240
+        });
+
+        cameraUtils.start()
+            .then(() => { statusText.innerText = "摄像头已启动，加载模型中..."; })
+            .catch(err => { console.error(err); statusText.innerText = "摄像头访问被拒绝"; });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
